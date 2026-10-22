@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-\\.]+$');
+    }
+
+    // Default deny for unknown collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Outpass Applications Collection (Supports 100,000+ records)
+    match /requests/{outpassId} {
+      allow read: if isValidId(outpassId);
+      allow create: if isValidId(outpassId)
+                    && request.resource.data.outpassId is string
+                    && request.resource.data.studentId is string
+                    && request.resource.data.destination is string
+                    && request.resource.data.status is string;
+      allow update: if isValidId(outpassId)
+                    && request.resource.data.outpassId is string
+                    && request.resource.data.status is string;
+      allow delete: if isValidId(outpassId);
+    }
+
+    // Audit Logs Collection
+    match /audit_logs/{eventId} {
+      allow read: if isValidId(eventId);
+      allow create: if isValidId(eventId)
+                    && request.resource.data.eventId is string
+                    && request.resource.data.outpassId is string;
+      allow update: if false; // Immutable audit log
+      allow delete: if false;
+    }
+
+    // Admin / Staff Accounts (RC, EW, Security)
+    match /admins/{adminId} {
+      allow read: if isValidId(adminId);
+      allow write: if isValidId(adminId);
+    }
+
+    // Student Profiles
+    match /students/{studentId} {
+      allow read: if isValidId(studentId);
+      allow write: if isValidId(studentId);
+    }
+
+    // System & Workflow Configuration
+    match /system_config/{configId} {
+      allow read: if isValidId(configId);
+      allow write: if isValidId(configId);
+    }
+
+    // Test connection doc
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+  }
+}

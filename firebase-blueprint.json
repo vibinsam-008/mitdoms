@@ -1,0 +1,94 @@
+{
+  "entities": {
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "User profile and role credentials for Student, RC, EW, or Gatekeeper with duplicate ID prevention",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "uniqueId": { "type": "string", "maxLength": 64 },
+        "role": { "type": "string", "enum": ["STUDENT", "RC", "EW", "GATEKEEPER"] },
+        "name": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 128 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "hostelBlock": { "type": "string", "maxLength": 64 },
+        "roomNumber": { "type": "string", "maxLength": 32 },
+        "branch": { "type": "string", "maxLength": 64 },
+        "year": { "type": "string", "maxLength": 16 },
+        "parentPhone": { "type": "string", "maxLength": 32 },
+        "password": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "uniqueId", "role", "name", "createdAt"]
+    },
+    "OutpassRequest": {
+      "title": "OutpassRequest",
+      "description": "Student digital outpass application and cross-device lifecycle tracking",
+      "type": "object",
+      "properties": {
+        "outpassId": { "type": "string", "maxLength": 64 },
+        "studentId": { "type": "string", "maxLength": 64 },
+        "studentName": { "type": "string", "maxLength": 128 },
+        "studentRegNo": { "type": "string", "maxLength": 32 },
+        "hostelBlock": { "type": "string", "maxLength": 64 },
+        "roomNumber": { "type": "string", "maxLength": 32 },
+        "studentPhone": { "type": "string", "maxLength": 32 },
+        "parentPhone": { "type": "string", "maxLength": 32 },
+        "destination": { "type": "string", "maxLength": 256 },
+        "visitAddress": { "type": "string", "maxLength": 512 },
+        "purpose": { "type": "string", "maxLength": 512 },
+        "proposedDays": { "type": "number" },
+        "departureDateTime": { "type": "string", "maxLength": 64 },
+        "returnDateTime": { "type": "string", "maxLength": 64 },
+        "status": {
+          "type": "string",
+          "enum": [
+            "PENDING_RC",
+            "APPROVED",
+            "REJECTED",
+            "OUT_OF_CAMPUS",
+            "RETURNED_TO_CAMPUS",
+            "EXPIRED",
+            "CANCELLED"
+          ]
+        },
+        "academicYear": { "type": "string", "maxLength": 32 },
+        "verificationToken": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["outpassId", "studentId", "destination", "status", "createdAt"]
+    },
+    "AuditLogEntry": {
+      "title": "AuditLogEntry",
+      "description": "20-year immutable audit trail for institutional compliance",
+      "type": "object",
+      "properties": {
+        "eventId": { "type": "string", "maxLength": 64 },
+        "outpassId": { "type": "string", "maxLength": 64 },
+        "action": { "type": "string", "maxLength": 64 },
+        "actorRole": { "type": "string", "maxLength": 32 },
+        "actorName": { "type": "string", "maxLength": 128 },
+        "actorId": { "type": "string", "maxLength": 64 },
+        "timestamp": { "type": "string", "maxLength": 64 },
+        "remarks": { "type": "string", "maxLength": 512 }
+      },
+      "required": ["eventId", "outpassId", "action", "actorRole", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "User accounts with duplicate prevention by unique ID"
+    },
+    "/requests/{outpassId}": {
+      "schema": { "$ref": "#/entities/OutpassRequest" },
+      "description": "Student outpass requests synced across student, RC, EW, and gatekeeper devices"
+    },
+    "/audit_logs/{eventId}": {
+      "schema": { "$ref": "#/entities/AuditLogEntry" },
+      "description": "Permanent audit logs preserved for 20 years"
+    }
+  }
+}

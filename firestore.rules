@@ -1,0 +1,57 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-\\.]+$');
+    }
+
+    // Default deny for unmapped documents
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // User accounts collection with role and unique ID tracking
+    match /users/{userId} {
+      allow read: if isValidId(userId);
+      allow create, update: if isValidId(userId)
+                    && request.resource.data.id is string
+                    && request.resource.data.uniqueId is string
+                    && request.resource.data.role is string;
+      allow delete: if isValidId(userId);
+    }
+
+    // Outpass Applications Collection (Real-time sync across Student, RC, Gatekeeper, EW)
+    match /requests/{outpassId} {
+      allow read: if isValidId(outpassId);
+      allow create: if isValidId(outpassId)
+                    && request.resource.data.outpassId is string
+                    && request.resource.data.studentId is string
+                    && request.resource.data.status is string;
+      allow update: if isValidId(outpassId)
+                    && request.resource.data.outpassId is string
+                    && request.resource.data.status is string;
+      allow delete: if isValidId(outpassId);
+    }
+
+    // Audit Logs (Immutable, 20-year compliance record)
+    match /audit_logs/{eventId} {
+      allow read: if isValidId(eventId);
+      allow create: if isValidId(eventId)
+                    && request.resource.data.eventId is string
+                    && request.resource.data.outpassId is string;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // System configurations
+    match /system_config/{configId} {
+      allow read, write: if isValidId(configId);
+    }
+
+    // Test connection doc
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+  }
+}

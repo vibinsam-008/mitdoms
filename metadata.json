@@ -1,0 +1,6 @@
+{
+  "name": "MIT Digital Outpass Management System",
+  "description": "Multi-role cross-device digital outpass platform for hostel inmates, Resident Counsellors, Executive Wardens, and Gatekeepers with real-time sync and duplicate ID prevention.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

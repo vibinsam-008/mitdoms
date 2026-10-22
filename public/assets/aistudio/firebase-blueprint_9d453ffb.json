@@ -1,0 +1,115 @@
+{
+  "entities": {
+    "OutpassRequest": {
+      "title": "OutpassRequest",
+      "description": "Student hostel digital outpass application and lifecycle record",
+      "type": "object",
+      "properties": {
+        "outpassId": { "type": "string", "maxLength": 64 },
+        "studentId": { "type": "string", "maxLength": 64 },
+        "destination": { "type": "string", "maxLength": 256 },
+        "visitAddress": { "type": "string", "maxLength": 1024 },
+        "purpose": { "type": "string", "maxLength": 1024 },
+        "proposedDays": { "type": "number" },
+        "departureDateTime": { "type": "string", "maxLength": 64 },
+        "returnDateTime": { "type": "string", "maxLength": 64 },
+        "status": {
+          "type": "string",
+          "enum": [
+            "DRAFT",
+            "SUBMITTED",
+            "PENDING_RC",
+            "PENDING_EW",
+            "APPROVED",
+            "REJECTED",
+            "RETURNED_FOR_CORRECTION",
+            "CANCELLED",
+            "OUT_OF_CAMPUS",
+            "RETURNED_TO_CAMPUS",
+            "EXPIRED"
+          ]
+        },
+        "studentSignatureUrl": { "type": "string", "maxLength": 500000 },
+        "verificationToken": { "type": "string", "maxLength": 128 },
+        "requiresEWApproval": { "type": "boolean" },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["outpassId", "studentId", "destination", "status", "createdAt"]
+    },
+    "AuditLogEntry": {
+      "title": "AuditLogEntry",
+      "description": "Immutable audit trail event for outpass lifecycle tracking",
+      "type": "object",
+      "properties": {
+        "eventId": { "type": "string", "maxLength": 64 },
+        "outpassId": { "type": "string", "maxLength": 64 },
+        "action": { "type": "string", "maxLength": 64 },
+        "actorRole": { "type": "string", "maxLength": 32 },
+        "actorName": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "string", "maxLength": 64 },
+        "remarks": { "type": "string", "maxLength": 1024 }
+      },
+      "required": ["eventId", "outpassId", "action", "actorRole", "timestamp"]
+    },
+    "StaffProfile": {
+      "title": "StaffProfile",
+      "description": "Resident Counsellor or Executive Warden account and signature profile",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "name": { "type": "string", "maxLength": 128 },
+        "role": { "type": "string", "enum": ["RC", "EW", "SECURITY"] },
+        "designation": { "type": "string", "maxLength": 128 },
+        "signatureUrl": { "type": "string", "maxLength": 500000 }
+      },
+      "required": ["id", "name", "role"]
+    },
+    "StudentInmate": {
+      "title": "StudentInmate",
+      "description": "Student inmate hostel profile",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string", "maxLength": 64 },
+        "name": { "type": "string", "maxLength": 128 },
+        "registerNumber": { "type": "string", "maxLength": 32 },
+        "hostelBlock": { "type": "string", "maxLength": 64 },
+        "roomNumber": { "type": "string", "maxLength": 32 }
+      },
+      "required": ["studentId", "name", "registerNumber", "hostelBlock", "roomNumber"]
+    },
+    "WorkflowConfig": {
+      "title": "WorkflowConfig",
+      "description": "Campus hostel approval policy configuration",
+      "type": "object",
+      "properties": {
+        "approvalPolicy": { "type": "string", "maxLength": 64 },
+        "ewThresholdDays": { "type": "number" },
+        "autoExpireAfterHours": { "type": "number" }
+      },
+      "required": ["approvalPolicy", "ewThresholdDays"]
+    }
+  },
+  "firestore": {
+    "/requests/{outpassId}": {
+      "schema": { "$ref": "#/entities/OutpassRequest" },
+      "description": "Collection storing all active and historical student digital outpass applications scalable to 100,000+ entries"
+    },
+    "/audit_logs/{eventId}": {
+      "schema": { "$ref": "#/entities/AuditLogEntry" },
+      "description": "Immutable log trail of all student and staff lifecycle events"
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/StaffProfile" },
+      "description": "Staff user accounts, block assignments, and authorized signature snapshots"
+    },
+    "/students/{studentId}": {
+      "schema": { "$ref": "#/entities/StudentInmate" },
+      "description": "Inmate roster records and hostel residency details"
+    },
+    "/system_config/{configId}": {
+      "schema": { "$ref": "#/entities/WorkflowConfig" },
+      "description": "Global workflow approval policies and sanction rules"
+    }
+  }
+}

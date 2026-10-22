@@ -1,0 +1,6 @@
+{
+  "name": "MIT Hostel Digital Outpass Management System",
+  "description": "Prototype digital outpass and student hostel leave management system for Madras Institute of Technology (MIT), Chromepet, Chennai.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
