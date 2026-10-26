@@ -167,6 +167,7 @@ export const RoleRegisterPage: React.FC<RoleRegisterPageProps> = ({
           guardianName: guardianName.trim()
         } : {}),
         ...(role === 'RC' ? {
+          hostelBlock,
           designation: designation.trim() || `Resident Counsellor (${hostelBlock} Block)`
         } : {}),
         ...(role === 'EW' ? {
@@ -412,15 +413,45 @@ export const RoleRegisterPage: React.FC<RoleRegisterPageProps> = ({
             )}
 
             {role === 'RC' && (
-              <div className="space-y-3 pt-2 border-t border-zinc-800">
-                <label className="block text-xs font-medium text-zinc-300">Designation / Assigned Hostel Block</label>
-                <input
-                  type="text"
-                  value={designation}
-                  onChange={(e) => setDesignation(e.target.value)}
-                  placeholder="e.g., Resident Counsellor, Marutham Block"
-                  className="w-full px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-sm text-zinc-100 focus:outline-none focus:border-zinc-500"
-                />
+              <div className="space-y-4 pt-2 border-t border-zinc-800">
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-bold text-zinc-200">
+                      Select Assigned Hostel Block <span className="text-red-400">* (Specialized Inmate Database)</span>
+                    </label>
+                    <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-800/80">
+                      Block-Specialized
+                    </span>
+                  </div>
+                  <select
+                    value={hostelBlock}
+                    onChange={(e) => setHostelBlock(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-lg bg-zinc-950 border border-zinc-700 text-sm font-semibold text-white focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                    required
+                  >
+                    {HOSTEL_BLOCKS.map(block => (
+                      <option key={block} value={block} className="bg-zinc-900 text-white py-1">
+                        {block} Block (Hostel)
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-zinc-400 mt-1.5 leading-relaxed">
+                    Student outpass applications from this specific hostel block will be stored in a specialized database partition and automatically routed to your RC console for confirmation.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-zinc-300 mb-1">
+                    Faculty Department / Designation (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={designation}
+                    onChange={(e) => setDesignation(e.target.value)}
+                    placeholder={`Resident Counsellor, ${hostelBlock} Block`}
+                    className="w-full px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
+                  />
+                </div>
               </div>
             )}
 

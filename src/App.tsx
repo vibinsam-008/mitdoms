@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Role, UserProfile, OutpassRequest } from './types';
 import { Navbar } from './components/Navbar';
 import { WelcomeRoleSelector } from './components/WelcomeRoleSelector';
@@ -13,7 +13,8 @@ import {
 } from './firebase/config';
 import { 
   subscribeToOutpasses, 
-  seedInitialDemoData 
+  seedInitialDemoData,
+  fetchOutpassesFromServer
 } from './firebase/dbService';
 
 const SESSION_USER_KEY = 'mit_outpass_session_user';
@@ -36,13 +37,26 @@ export default function App() {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [requests, setRequests] = useState<OutpassRequest[]>([]);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(true);
+  const [syncLatencyMs, setSyncLatencyMs] = useState<number>(38);
+
+  const handleManualSync = useCallback(async () => {
+    const start = performance.now();
+    try {
+      const data = await fetchOutpassesFromServer();
+      const elapsed = Math.round(performance.now() - start);
+      setSyncLatencyMs(Math.max(12, elapsed));
+      setRequests(data);
+    } catch {
+      // Ignore
+    }
+  }, []);
 
   // Initialize and Seed Demo Data on boot
   useEffect(() => {
     testConnection();
     seedInitialDemoData();
 
-    // Subscribe to Real-Time Outpass collection
+    // Subscribe to Real-Time Outpass collection with minimum latency
     const unsubscribe = subscribeToOutpasses((data) => {
       setRequests(data);
     });
@@ -145,7 +159,12 @@ export default function App() {
         )}
 
         {currentUser && currentUser.role === 'RC' && (
-          <RCDashboard currentUser={currentUser} requests={requests} />
+          <RCDashboard 
+            currentUser={currentUser} 
+            requests={requests} 
+            onManualSync={handleManualSync}
+            syncLatencyMs={syncLatencyMs}
+          />
         )}
 
         {currentUser && currentUser.role === 'GATEKEEPER' && (

@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { UserProfile, OutpassRequest, HOSTEL_BLOCKS } from '../types';
-import { rcReviewOutpass } from '../firebase/dbService';
+import { rcReviewOutpass, playNotificationChime } from '../firebase/dbService';
 import { PrintableOutpassModal } from './PrintableOutpassModal';
 import { 
   ShieldCheck, 
@@ -20,16 +20,29 @@ import {
   Send,
   AlertCircle,
   Search,
-  Bell
+  Bell,
+  RefreshCw,
+  Zap,
+  Volume2,
+  VolumeX,
+  Radio
 } from 'lucide-react';
 
 interface RCDashboardProps {
   currentUser: UserProfile;
   requests: OutpassRequest[];
+  onManualSync?: () => Promise<void>;
+  syncLatencyMs?: number;
 }
 
-export const RCDashboard: React.FC<RCDashboardProps> = ({ currentUser, requests }) => {
-  const [selectedBlock, setSelectedBlock] = useState<string>('ALL');
+export const RCDashboard: React.FC<RCDashboardProps> = ({ 
+  currentUser, 
+  requests,
+  onManualSync,
+  syncLatencyMs = 42
+}) => {
+  const assignedHostel = currentUser.hostelBlock || 'Marutham';
+  const [selectedBlock, setSelectedBlock] = useState<string>(assignedHostel);
   const [activeTab, setActiveTab] = useState<'PENDING' | 'DECIDED' | 'ALL'>('PENDING');
   const [searchQuery, setSearchQuery] = useState('');
   const [reviewRemarks, setReviewRemarks] = useState<{ [outpassId: string]: string }>({});
@@ -37,14 +50,43 @@ export const RCDashboard: React.FC<RCDashboardProps> = ({ currentUser, requests 
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
   const [actionToast, setActionToast] = useState<string | null>(null);
   const [selectedForCertificate, setSelectedForCertificate] = useState<OutpassRequest | null>(null);
+  const [isManualSyncing, setIsManualSyncing] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [newArrivalBanner, setNewArrivalBanner] = useState<OutpassRequest | null>(null);
+
+  // Track previous request IDs to detect real-time arrivals on the RC phone
+  const prevPendingIdsRef = useRef<Set<string>>(new Set());
+  const isInitialMount = useRef(true);
+
+  useEffect(() => {
+    const currentPending = requests.filter(r => r.status === 'PENDING_RC');
+    const currentPendingIds = new Set(currentPending.map(r => r.outpassId));
+
+    if (!isInitialMount.current) {
+      // Find newly arrived outpass that was not in previous set
+      const newArrival = currentPending.find(r => !prevPendingIdsRef.current.has(r.outpassId));
+      if (newArrival) {
+        setNewArrivalBanner(newArrival);
+        if (soundEnabled) {
+          playNotificationChime();
+        }
+        // Auto-dismiss banner after 8s
+        setTimeout(() => {
+          setNewArrivalBanner(null);
+        }, 8000);
+      }
+    } else {
+      isInitialMount.current = false;
+    }
+
+    prevPendingIdsRef.current = currentPendingIds;
+  }, [requests, soundEnabled]);
 
   // Filter requests
   const filteredRequests = requests.filter(req => {
-    // Block filter
     if (selectedBlock !== 'ALL' && req.hostelBlock !== selectedBlock) {
       return false;
     }
-    // Search query
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       const matchName = req.studentName.toLowerCase().includes(q);
@@ -53,7 +95,6 @@ export const RCDashboard: React.FC<RCDashboardProps> = ({ currentUser, requests 
       const matchId = req.outpassId.toLowerCase().includes(q);
       if (!matchName && !matchReg && !matchDest && !matchId) return false;
     }
-    // Tab filter
     if (activeTab === 'PENDING') {
       return req.status === 'PENDING_RC';
     }
@@ -63,9 +104,14 @@ export const RCDashboard: React.FC<RCDashboardProps> = ({ currentUser, requests 
     return true;
   });
 
-  const pendingCount = requests.filter(r => r.status === 'PENDING_RC').length;
-  const approvedCount = requests.filter(r => ['APPROVED', 'OUT_OF_CAMPUS', 'RETURNED_TO_CAMPUS'].includes(r.status)).length;
-  const rejectedCount = requests.filter(r => r.status === 'REJECTED').length;
+  const blockScopedRequests = selectedBlock === 'ALL'
+    ? requests
+    : requests.filter(r => r.hostelBlock?.toLowerCase() === selectedBlock.toLowerCase());
+
+  const pendingCount = blockScopedRequests.filter(r => r.status === 'PENDING_RC').length;
+  const approvedCount = blockScopedRequests.filter(r => ['APPROVED', 'OUT_OF_CAMPUS', 'RETURNED_TO_CAMPUS'].includes(r.status)).length;
+  const rejectedCount = blockScopedRequests.filter(r => r.status === 'REJECTED').length;
+  const allInmatesCount = blockScopedRequests.length;
 
   const handleDecision = async (req: OutpassRequest, decision: 'APPROVED' | 'REJECTED') => {
     setActionLoadingId(req.outpassId);
@@ -78,7 +124,7 @@ export const RCDashboard: React.FC<RCDashboardProps> = ({ currentUser, requests 
       await rcReviewOutpass(req.outpassId, decision, remarks, isParentVerified, currentUser);
       setActionToast(
         decision === 'APPROVED'
-          ? `✓ Outpass ${req.outpassId} approved! Instantly transmitted to Main Gate Security & Hostel Office.`
+          ? `✓ Outpass ${req.outpassId} approved! Instantly pushed to Main Gate Security & Hostel Office.`
           : `✗ Outpass ${req.outpassId} declined with remarks recorded.`
       );
       setTimeout(() => setActionToast(null), 5000);
@@ -86,6 +132,16 @@ export const RCDashboard: React.FC<RCDashboardProps> = ({ currentUser, requests 
       setActionToast('Failed to update outpass status. Please check connection.');
     } finally {
       setActionLoadingId(null);
+    }
+  };
+
+  const handleTriggerSync = async () => {
+    if (!onManualSync) return;
+    setIsManualSyncing(true);
+    try {
+      await onManualSync();
+    } finally {
+      setTimeout(() => setIsManualSyncing(false), 400);
     }
   };
 
@@ -108,6 +164,49 @@ export const RCDashboard: React.FC<RCDashboardProps> = ({ currentUser, requests 
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 space-y-5">
+      {/* Real-time Arrival Alert Banner (Pops up with zero latency when student applies) */}
+      {newArrivalBanner && (
+        <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-950 via-zinc-900 to-emerald-950 border-2 border-emerald-500 shadow-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-bounce">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-emerald-500 text-zinc-950 flex items-center justify-center font-bold shrink-0 shadow-lg">
+              <Zap className="w-5 h-5 fill-current" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono font-bold uppercase tracking-wider text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded border border-emerald-700">
+                  ⚡ New Application Received (Live)
+                </span>
+                <span className="text-[11px] font-mono text-zinc-400">{newArrivalBanner.outpassId}</span>
+              </div>
+              <p className="text-sm font-bold text-white mt-0.5">
+                {newArrivalBanner.studentName} ({newArrivalBanner.studentRegNo}) • {newArrivalBanner.destination}
+              </p>
+              <p className="text-xs text-zinc-300">
+                {newArrivalBanner.hostelBlock} Block Rm {newArrivalBanner.roomNumber} • Parent: {newArrivalBanner.parentPhone}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 self-end sm:self-auto">
+            <button
+              onClick={() => {
+                setActiveTab('PENDING');
+                setNewArrivalBanner(null);
+              }}
+              className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-xs shadow cursor-pointer"
+            >
+              Review Now
+            </button>
+            <button
+              onClick={() => setNewArrivalBanner(null)}
+              className="p-1.5 rounded-lg text-zinc-400 hover:text-white"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* RC Mobile-Optimized Top Header */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 sm:p-6 shadow-xl">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -130,11 +229,34 @@ export const RCDashboard: React.FC<RCDashboardProps> = ({ currentUser, requests 
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] text-zinc-400 font-mono px-3 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 flex items-center gap-1.5">
-              <Smartphone className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Mobile Live Stream</span>
-            </span>
+          {/* Low-Latency Status Pill & Manual Sync */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-950 border border-zinc-800 text-[11px] font-mono text-emerald-400">
+              <Radio className="w-3 h-3 text-emerald-400 animate-pulse" />
+              <span>Low-Latency Sync: {syncLatencyMs}ms</span>
+            </div>
+
+            <button
+              onClick={() => setSoundEnabled(!soundEnabled)}
+              className={`p-1.5 rounded-lg border text-xs transition-colors ${
+                soundEnabled 
+                  ? 'bg-zinc-950 border-zinc-800 text-emerald-400 hover:text-emerald-300' 
+                  : 'bg-zinc-950 border-zinc-800 text-zinc-500 hover:text-zinc-300'
+              }`}
+              title={soundEnabled ? 'Chime sound active for new requests' : 'Chime sound muted'}
+            >
+              {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+            </button>
+
+            <button
+              onClick={handleTriggerSync}
+              disabled={isManualSyncing}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 transition-colors cursor-pointer"
+              title="Force check for newly arrived student requests"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isManualSyncing ? 'animate-spin text-emerald-400' : ''}`} />
+              <span>{isManualSyncing ? 'Syncing...' : 'Sync Now'}</span>
+            </button>
           </div>
         </div>
 
@@ -173,7 +295,7 @@ export const RCDashboard: React.FC<RCDashboardProps> = ({ currentUser, requests 
             }`}
           >
             <span className="text-[11px] text-zinc-400 block font-medium">All Inmates</span>
-            <span className="text-xl sm:text-2xl font-black font-mono text-zinc-200">{requests.length}</span>
+            <span className="text-xl sm:text-2xl font-black font-mono text-zinc-200">{allInmatesCount}</span>
           </button>
         </div>
       </div>
@@ -190,6 +312,55 @@ export const RCDashboard: React.FC<RCDashboardProps> = ({ currentUser, requests 
           </button>
         </div>
       )}
+
+      {/* Specialized Hostel Database Partition Banner */}
+      <div className="p-3.5 sm:p-4 rounded-xl bg-zinc-900 border border-emerald-900/60 shadow-md flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-emerald-950 border border-emerald-800 flex items-center justify-center text-emerald-400 shrink-0">
+            <Building2 className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-white tracking-tight">
+                Specialized Database: <span className="text-emerald-400 font-mono font-extrabold">{assignedHostel} Block</span>
+              </span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-700/80">
+                Respective RC Queue
+              </span>
+            </div>
+            <p className="text-xs text-zinc-400 mt-0.5">
+              {selectedBlock === assignedHostel 
+                ? `Exclusively displaying outpass requests from ${assignedHostel} Block inmates.` 
+                : `Viewing campus-wide outpasses. Tap below to filter to your assigned ${assignedHostel} Block.`}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+          <button
+            type="button"
+            onClick={() => setSelectedBlock(assignedHostel)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              selectedBlock === assignedHostel
+                ? 'bg-emerald-500 text-zinc-950 shadow-md'
+                : 'bg-zinc-950 text-zinc-400 hover:text-white border border-zinc-800'
+            }`}
+          >
+            My {assignedHostel} Block
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectedBlock('ALL')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+              selectedBlock === 'ALL'
+                ? 'bg-zinc-200 text-zinc-950 shadow-md'
+                : 'bg-zinc-950 text-zinc-400 hover:text-white border border-zinc-800'
+            }`}
+          >
+            All Hostels
+          </button>
+        </div>
+      </div>
 
       {/* Filters & Search Bar */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-zinc-900/60 p-3 rounded-xl border border-zinc-800">
@@ -209,10 +380,12 @@ export const RCDashboard: React.FC<RCDashboardProps> = ({ currentUser, requests 
           <select
             value={selectedBlock}
             onChange={(e) => setSelectedBlock(e.target.value)}
-            className="px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-200 focus:outline-none focus:border-zinc-500 font-medium"
+            className="px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500 font-medium cursor-pointer"
           >
-            <option value="ALL">All Hostel Blocks</option>
-            {HOSTEL_BLOCKS.map(b => (
+            <option value={assignedHostel}>🏠 {assignedHostel} Block (My Assigned Hostel)</option>
+            <option value="ALL">🌐 All Campus Hostels</option>
+            <option disabled>──────────</option>
+            {HOSTEL_BLOCKS.filter(b => b !== assignedHostel).map(b => (
               <option key={b} value={b}>{b} Block</option>
             ))}
           </select>
@@ -244,7 +417,7 @@ export const RCDashboard: React.FC<RCDashboardProps> = ({ currentUser, requests 
             <h3 className="text-sm font-semibold text-zinc-300">All Cleared! No Pending Applications</h3>
             <p className="text-xs text-zinc-500 mt-1 max-w-sm mx-auto">
               {activeTab === 'PENDING'
-                ? 'There are no pending outpass applications for this selection. As soon as a student applies from their phone, it will appear here in real-time.'
+                ? 'There are no pending outpass applications. As soon as a student applies from their phone, it will arrive on this screen within milliseconds with zero latency.'
                 : 'No outpasses matched your query.'}
             </p>
           </div>

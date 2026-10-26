@@ -86,6 +86,10 @@
       "schema": { "$ref": "#/entities/OutpassRequest" },
       "description": "Student outpass requests synced across student, RC, EW, and gatekeeper devices"
     },
+    "/hostel_blocks/{blockId}/requests/{outpassId}": {
+      "schema": { "$ref": "#/entities/OutpassRequest" },
+      "description": "Specialized hostel block partition storing student requests by their specific hostel block"
+    },
     "/audit_logs/{eventId}": {
       "schema": { "$ref": "#/entities/AuditLogEntry" },
       "description": "Permanent audit logs preserved for 20 years"

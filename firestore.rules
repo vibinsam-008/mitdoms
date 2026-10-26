@@ -21,7 +21,7 @@ service cloud.firestore {
       allow delete: if isValidId(userId);
     }
 
-    // Outpass Applications Collection (Real-time sync across Student, RC, Gatekeeper, EW)
+    // Outpass Applications Collection (Global Real-time sync across Student, RC, Gatekeeper, EW)
     match /requests/{outpassId} {
       allow read: if isValidId(outpassId);
       allow create: if isValidId(outpassId)
@@ -32,6 +32,11 @@ service cloud.firestore {
                     && request.resource.data.outpassId is string
                     && request.resource.data.status is string;
       allow delete: if isValidId(outpassId);
+    }
+
+    // Specialized Hostel Block Collection (Block-specialized outpasses partitioned by student hostel)
+    match /hostel_blocks/{blockId}/requests/{outpassId} {
+      allow read, write: if isValidId(blockId) && isValidId(outpassId);
     }
 
     // Audit Logs (Immutable, 20-year compliance record)

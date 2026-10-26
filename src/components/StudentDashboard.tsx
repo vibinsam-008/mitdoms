@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { UserProfile, OutpassRequest } from '../types';
+import { UserProfile, OutpassRequest, COMMON_DISEASES } from '../types';
 import { createOutpass } from '../firebase/dbService';
 import { PrintableOutpassModal } from './PrintableOutpassModal';
 import { 
@@ -17,7 +17,10 @@ import {
   User,
   ShieldCheck,
   Send,
-  X
+  X,
+  Activity,
+  HeartPulse,
+  Stethoscope
 } from 'lucide-react';
 
 interface StudentDashboardProps {
@@ -30,6 +33,13 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ currentUser,
   const [selectedOutpassForPrint, setSelectedOutpassForPrint] = useState<OutpassRequest | null>(null);
 
   // Application Form State
+  const [isMedicalLeave, setIsMedicalLeave] = useState(false);
+  const [diseaseType, setDiseaseType] = useState<string>('Viral Fever / High Temperature');
+  const [customDisease, setCustomDisease] = useState('');
+  const [doctorName, setDoctorName] = useState('');
+  const [hospitalClinic, setHospitalClinic] = useState('MIT Health Centre');
+  const [symptoms, setSymptoms] = useState('');
+
   const [destination, setDestination] = useState('');
   const [visitAddress, setVisitAddress] = useState('');
   const [purpose, setPurpose] = useState('');
@@ -40,6 +50,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ currentUser,
   const [declaration, setDeclaration] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitSuccessToast, setSubmitSuccessToast] = useState<string | null>(null);
 
   // Filter requests belonging to this student (or matching register number)
   const myRequests = requests.filter(
@@ -64,6 +75,12 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ currentUser,
     setDepartureDateTime(toInputFormat(defaultDep));
     setReturnDateTime(toInputFormat(defaultRet));
     setParentPhone(currentUser.parentPhone || '');
+    setIsMedicalLeave(false);
+    setDiseaseType('Viral Fever / High Temperature');
+    setCustomDisease('');
+    setDoctorName('');
+    setHospitalClinic('MIT Health Centre');
+    setSymptoms('');
     setSubmitError(null);
     setDeclaration(false);
     setShowApplyModal(true);
@@ -84,6 +101,10 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ currentUser,
     setIsSubmitting(true);
     setSubmitError(null);
 
+    const effectiveDisease = diseaseType === 'Other Medical Illness' && customDisease.trim()
+      ? customDisease.trim()
+      : diseaseType;
+
     try {
       const res = await createOutpass({
         studentId: currentUser.id,
@@ -98,16 +119,33 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ currentUser,
         destination: destination.trim(),
         visitAddress: visitAddress.trim() || 'Hometown Residential Address',
         purpose: purpose.trim(),
+        category: isMedicalLeave ? 'MEDICAL' : 'GENERAL',
+        isMedicalLeave: isMedicalLeave,
+        diseaseType: isMedicalLeave ? effectiveDisease : undefined,
+        medicalDetails: isMedicalLeave ? {
+          diseaseType: effectiveDisease,
+          doctorName: doctorName.trim() || 'MIT Medical Officer',
+          hospitalClinic: hospitalClinic.trim() || 'MIT Health Centre',
+          symptoms: symptoms.trim() || purpose.trim(),
+          bedRestDays: Number(proposedDays) || 2
+        } : undefined,
         proposedDays: Number(proposedDays) || 1,
         departureDateTime: new Date(departureDateTime).toISOString(),
         returnDateTime: new Date(returnDateTime).toISOString()
       });
 
-      if (res.success) {
+      if (res.success && res.outpass) {
         setShowApplyModal(false);
         setDestination('');
         setPurpose('');
         setVisitAddress('');
+        setIsMedicalLeave(false);
+        setSubmitSuccessToast(
+          isMedicalLeave 
+            ? `🏥 Medical Holiday Application ${res.outpass.outpassId} (${effectiveDisease}) submitted directly to RC & Executive Warden!`
+            : `⚡ Application ${res.outpass.outpassId} dispatched! Delivered in real-time to your Resident Counsellor (RC).`
+        );
+        setTimeout(() => setSubmitSuccessToast(null), 7000);
       } else {
         setSubmitError(res.error || 'Failed to submit outpass request.');
       }
@@ -170,6 +208,19 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ currentUser,
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+      {/* Instant Success Alert */}
+      {submitSuccessToast && (
+        <div className="p-4 rounded-xl bg-emerald-950/90 border border-emerald-600 text-emerald-200 text-xs flex items-center justify-between shadow-xl animate-fade-in">
+          <div className="flex items-center gap-2.5">
+            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+            <span className="font-semibold text-sm text-white">{submitSuccessToast}</span>
+          </div>
+          <button onClick={() => setSubmitSuccessToast(null)} className="text-emerald-400 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Student Profile Card & Action Banner */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 sm:p-6 shadow-xl">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -253,6 +304,20 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ currentUser,
                   </div>
                   <div>{getStatusBadge(req.status)}</div>
                 </div>
+
+                {/* Medical Leave Indicator if applicable */}
+                {(req.isMedicalLeave || req.category === 'MEDICAL') && (
+                  <div className="flex items-center gap-2 p-2.5 rounded-lg bg-red-950/60 border border-red-800/80 text-xs text-red-200">
+                    <HeartPulse className="w-4 h-4 text-red-400 shrink-0" />
+                    <div>
+                      <span className="font-bold text-red-300">Medical Holiday Application: </span>
+                      <span className="font-medium text-white">{req.diseaseType || req.medicalDetails?.diseaseType || 'Medical Illness'}</span>
+                      {req.medicalDetails?.hospitalClinic && (
+                        <p className="text-[11px] text-red-400 mt-0.5">Clinic: {req.medicalDetails.hospitalClinic}</p>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {/* Purpose & Details */}
                 <p className="text-xs text-zinc-300 bg-zinc-950/70 p-3 rounded-lg border border-zinc-800/70">
@@ -387,6 +452,117 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ currentUser,
             )}
 
             <form onSubmit={handleApplySubmit} className="space-y-4">
+              {/* Category Selector */}
+              <div>
+                <label className="block text-xs font-semibold text-zinc-300 mb-1.5">
+                  Type of Outpass Application
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsMedicalLeave(false);
+                      if (purpose.startsWith('Medical Leave:')) setPurpose('');
+                    }}
+                    className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
+                      !isMedicalLeave
+                        ? 'bg-zinc-800 text-white border-zinc-600 shadow'
+                        : 'bg-zinc-950 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                    }`}
+                  >
+                    <Building2 className="w-3.5 h-3.5" />
+                    <span>General Outpass</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsMedicalLeave(true);
+                      if (!purpose) setPurpose(`Medical Leave: Under treatment for ${diseaseType}. Advised rest and care.`);
+                    }}
+                    className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
+                      isMedicalLeave
+                        ? 'bg-red-950 text-red-200 border-red-700 shadow'
+                        : 'bg-zinc-950 text-zinc-400 border-zinc-800 hover:text-zinc-200'
+                    }`}
+                  >
+                    <HeartPulse className="w-3.5 h-3.5 text-red-400" />
+                    <span>🏥 Medical Holiday / Sick Leave</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Medical Specific Fields */}
+              {isMedicalLeave && (
+                <div className="p-4 rounded-xl bg-red-950/40 border border-red-800/70 space-y-3">
+                  <div className="flex items-center gap-2 text-xs font-bold text-red-300">
+                    <Stethoscope className="w-4 h-4 text-red-400" />
+                    <span>Medical Holiday Details (Direct Notification to Executive Warden)</span>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-200 mb-1">
+                      Type of Disease / Medical Condition <span className="text-red-400">*</span>
+                    </label>
+                    <select
+                      value={diseaseType}
+                      onChange={(e) => {
+                        setDiseaseType(e.target.value);
+                        setPurpose(`Medical Leave: Under treatment for ${e.target.value}. Advised home recovery.`);
+                      }}
+                      className="w-full px-3 py-2 rounded-lg bg-zinc-950 border border-red-800/80 text-xs sm:text-sm text-zinc-100 focus:outline-none focus:border-red-500 font-medium"
+                      required
+                    >
+                      {COMMON_DISEASES.map(d => (
+                        <option key={d} value={d} className="bg-zinc-900 text-white">{d}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {diseaseType === 'Other Medical Illness' && (
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-200 mb-1">
+                        Specify Disease / Condition Name <span className="text-red-400">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={customDisease}
+                        onChange={(e) => setCustomDisease(e.target.value)}
+                        placeholder="e.g., Bronchitis, Severe Sinusitis, Dental Surgery"
+                        className="w-full px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100 focus:outline-none focus:border-red-500"
+                        required
+                      />
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-200 mb-1">
+                        Attending Doctor Name
+                      </label>
+                      <input
+                        type="text"
+                        value={doctorName}
+                        onChange={(e) => setDoctorName(e.target.value)}
+                        placeholder="e.g., Dr. R. Sundar, M.D."
+                        className="w-full px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100 focus:outline-none focus:border-red-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-200 mb-1">
+                        Hospital / Health Centre
+                      </label>
+                      <input
+                        type="text"
+                        value={hospitalClinic}
+                        onChange={(e) => setHospitalClinic(e.target.value)}
+                        placeholder="e.g., MIT Health Centre, Chromepet"
+                        className="w-full px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100 focus:outline-none focus:border-red-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Destination */}
               <div>
                 <label className="block text-xs font-semibold text-zinc-200 mb-1">

@@ -59,6 +59,17 @@ export interface GateLogs {
   securityNote?: string;
 }
 
+export type OutpassCategory = 'GENERAL' | 'MEDICAL' | 'OFFICIAL_OD' | 'EMERGENCY';
+
+export interface MedicalDetails {
+  diseaseType: string; // e.g., 'Viral Fever', 'Dengue Fever', 'Typhoid', 'Food Poisoning / Gastroenteritis', 'Orthopedic / Fracture'
+  doctorName?: string;
+  hospitalClinic?: string;
+  symptoms?: string;
+  bedRestDays?: number;
+  prescriptionUploaded?: boolean;
+}
+
 export interface OutpassRequest {
   outpassId: string; // e.g., OP-2026-1042
   studentId: string;
@@ -73,6 +84,10 @@ export interface OutpassRequest {
   destination: string;
   visitAddress: string;
   purpose: string;
+  category?: OutpassCategory;
+  isMedicalLeave?: boolean;
+  diseaseType?: string; // Type of disease e.g., Viral Fever, Dengue
+  medicalDetails?: MedicalDetails;
   proposedDays: number;
   departureDateTime: string;
   returnDateTime: string;
@@ -128,4 +143,20 @@ export const GATE_LOCATIONS = [
   'Main Gate (GST Road)',
   'East Gate (MIT Bridge)',
   'Hostel Campus Back Gate'
+] as const;
+
+export const COMMON_DISEASES = [
+  'Viral Fever / High Temperature',
+  'Dengue Fever',
+  'Typhoid',
+  'Acute Gastroenteritis / Food Poisoning',
+  'Chickenpox / Varicella',
+  'Orthopedic / Fracture / Ligament Tear',
+  'Severe Migraine / Neurological',
+  'Asthma / Acute Respiratory Infection',
+  'Eye Infection / Viral Conjunctivitis',
+  'Jaundice / Viral Hepatitis',
+  'Post-Surgical Recovery',
+  'Dental Emergency / Surgery',
+  'Other Medical Illness'
 ] as const;
