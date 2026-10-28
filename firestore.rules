@@ -54,6 +54,20 @@ service cloud.firestore {
       allow read, write: if isValidId(configId);
     }
 
+    // Holiday Periods (Defined by hostel management)
+    match /holiday_periods/{periodId} {
+      allow read, write: if isValidId(periodId);
+    }
+
+    // Holiday Student Declarations (Unique per student & period: DEC_periodId_studentRegNo)
+    match /holiday_declarations/{declarationId} {
+      allow read: if isValidId(declarationId);
+      allow create, update: if isValidId(declarationId)
+                    && request.resource.data.periodId is string
+                    && request.resource.data.studentRegNo is string;
+      allow delete: if isValidId(declarationId);
+    }
+
     // Test connection doc
     match /test/{docId} {
       allow read, write: if true;

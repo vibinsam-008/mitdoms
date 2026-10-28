@@ -5,7 +5,23 @@ import {
   onSnapshot
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType, ensureFirestoreActive } from './config';
-import { UserProfile, OutpassRequest, OutpassStatus, AuditLogEntry, Role } from '../types';
+import { 
+  UserProfile, 
+  OutpassRequest, 
+  OutpassStatus, 
+  AuditLogEntry, 
+  Role,
+  HolidayPeriod,
+  HolidayDeclaration,
+  DailyMealRequirement,
+  MessPlanningReport,
+  MessDailyReport,
+  EWDashboardSummary,
+  OperationalSanitationRecord,
+  isNativePlaceRequest,
+  isApprovedMedicalRequest,
+  HOSTEL_BLOCKS
+} from '../types';
 
 // Normalized key helper to prevent duplicate IDs and ensure valid Firestore document paths
 export function normalizeId(id: string): string {
@@ -28,7 +44,9 @@ export function getAcademicYear(): string {
 const LOCAL_USERS_KEY = 'mit_outpass_users_cache';
 const LOCAL_REQUESTS_KEY = 'mit_outpass_requests_cache';
 const LOCAL_AUDIT_KEY = 'mit_outpass_audit_cache';
-const SEED_FLAG_KEY = 'mit_outpass_seeded_v5';
+const LOCAL_HOLIDAY_PERIODS_KEY = 'mit_holiday_periods_cache';
+const LOCAL_HOLIDAY_DECLARATIONS_KEY = 'mit_holiday_declarations_cache';
+const SEED_FLAG_KEY = 'mit_outpass_seeded_v6';
 
 // BroadcastChannel for sub-millisecond local/cross-tab synchronization
 let syncChannel: BroadcastChannel | null = null;
@@ -927,6 +945,593 @@ export function playNotificationChime() {
   }
 }
 
+// =========================================================================
+// EXECUTIVE WARDEN STATISTICAL AGGREGATION ENGINE
+// =========================================================================
+
+export const BASELINE_BLOCK_CAPACITIES: Record<string, number> = {
+  'Marutham': 120,
+  'Thamirabarani': 110,
+  'Kaveri': 105,
+  'Vaigai': 95,
+  'Amaravathi': 85,
+  'Bhavani': 80,
+  'Ponni': 75,
+  'Ganga': 90,
+  'Kurinji': 70,
+  'Orchid': 65,
+  'NRI Hostel': 55
+};
+
+export const TOTAL_CAMPUS_CAPACITY = Object.values(BASELINE_BLOCK_CAPACITIES).reduce((acc, v) => acc + v, 0); // 950 inmates
+
+/**
+ * Computes Executive Warden summary metrics strictly distinguishing:
+ * - Native place: approved unused vs exited (verified gate departure) vs returned
+ * - Medical leave: approved unused vs exited/currently away vs returned
+ * - Hostel status: registered, verified present, verified away, approved unused, unverified
+ * Note: Does NOT expose diagnoses or medical notes.
+ */
+export function getEWSummaryStats(
+  requests: OutpassRequest[],
+  blockFilter: string = 'ALL',
+  dateRange?: { start?: string; end?: string }
+): EWDashboardSummary {
+  // 1. Filter requests by block and date if provided
+  let filtered = requests;
+  if (blockFilter !== 'ALL') {
+    filtered = filtered.filter(r => r.hostelBlock === blockFilter);
+  }
+  if (dateRange?.start) {
+    const s = new Date(dateRange.start).getTime();
+    filtered = filtered.filter(r => new Date(r.departureDateTime).getTime() >= s);
+  }
+  if (dateRange?.end) {
+    const e = new Date(dateRange.end).getTime();
+    filtered = filtered.filter(r => new Date(r.departureDateTime).getTime() <= e);
+  }
+
+  // A. Students at Native Place
+  // Count students whose approved outpass indicates native-place travel
+  const nativeRequests = filtered.filter(r => isNativePlaceRequest(r));
+  const nativeApprovedUnused = nativeRequests.filter(
+    r => r.status === 'APPROVED' && (!r.gateLogs || !r.gateLogs.departedAt)
+  ).length;
+  const nativeCurrentlyAway = nativeRequests.filter(
+    r => r.status === 'OUT_OF_CAMPUS' && Boolean(r.gateLogs?.departedAt)
+  ).length;
+  const nativeReturned = nativeRequests.filter(
+    r => r.status === 'RETURNED_TO_CAMPUS'
+  ).length;
+  const nativeTotalApproved = nativeApprovedUnused + nativeCurrentlyAway;
+
+  // B. Medical-Leave Outpasses
+  // Sanitization-related operational workflow: approved unused vs away vs returned
+  const medicalApprovedReqs = filtered.filter(r => isApprovedMedicalRequest(r));
+  const medicalApprovedUnused = medicalApprovedReqs.filter(
+    r => r.status === 'APPROVED' && (!r.gateLogs || !r.gateLogs.departedAt)
+  ).length;
+  const medicalCurrentlyAway = medicalApprovedReqs.filter(
+    r => r.status === 'OUT_OF_CAMPUS' && Boolean(r.gateLogs?.departedAt)
+  ).length;
+  const medicalReturned = medicalApprovedReqs.filter(
+    r => r.status === 'RETURNED_TO_CAMPUS'
+  ).length;
+  const medicalTotalApproved = medicalApprovedUnused + medicalCurrentlyAway;
+
+  // C. Current Hostel Status
+  // Registered capacity for filtered block or whole campus
+  const totalRegistered = blockFilter !== 'ALL'
+    ? (BASELINE_BLOCK_CAPACITIES[blockFilter] || 80)
+    : TOTAL_CAMPUS_CAPACITY;
+
+  // Currently away verified by gate departure
+  const allVerifiedAway = filtered.filter(
+    r => r.status === 'OUT_OF_CAMPUS' && Boolean(r.gateLogs?.departedAt)
+  ).length;
+
+  // Approved but unused outpasses (student still physically in hostel)
+  const allApprovedUnused = filtered.filter(
+    r => r.status === 'APPROVED' && (!r.gateLogs || !r.gateLogs.departedAt)
+  ).length;
+
+  // Verified present = registered minus verified away
+  const currentlyPresent = Math.max(0, totalRegistered - allVerifiedAway);
+
+  // Unverified count: Outpasses marked pending or without clear gate timestamps
+  const unverifiedCount = filtered.filter(
+    r => r.status === 'PENDING_RC' || (r.status === 'OUT_OF_CAMPUS' && !r.gateLogs?.departedAt)
+  ).length;
+
+  const presencePercentage = Number(((currentlyPresent / Math.max(1, totalRegistered)) * 100).toFixed(1));
+
+  // Block breakdown matrix
+  const blockBreakdown: Record<string, {
+    registered: number;
+    present: number;
+    away: number;
+    approvedUnused: number;
+    nativeAway: number;
+    medicalAway: number;
+  }> = {};
+
+  HOSTEL_BLOCKS.forEach(b => {
+    const reg = BASELINE_BLOCK_CAPACITIES[b] || 80;
+    const bReqs = requests.filter(r => r.hostelBlock === b);
+    const bAway = bReqs.filter(r => r.status === 'OUT_OF_CAMPUS' && Boolean(r.gateLogs?.departedAt)).length;
+    const bPresent = Math.max(0, reg - bAway);
+    const bAppUnused = bReqs.filter(r => r.status === 'APPROVED' && (!r.gateLogs || !r.gateLogs.departedAt)).length;
+    const bNatAway = bReqs.filter(r => isNativePlaceRequest(r) && r.status === 'OUT_OF_CAMPUS' && Boolean(r.gateLogs?.departedAt)).length;
+    const bMedAway = bReqs.filter(r => isApprovedMedicalRequest(r) && r.status === 'OUT_OF_CAMPUS' && Boolean(r.gateLogs?.departedAt)).length;
+
+    blockBreakdown[b] = {
+      registered: reg,
+      present: bPresent,
+      away: bAway,
+      approvedUnused: bAppUnused,
+      nativeAway: bNatAway,
+      medicalAway: bMedAway
+    };
+  });
+
+  return {
+    nativePlace: {
+      approvedUnused: nativeApprovedUnused,
+      currentlyAway: nativeCurrentlyAway,
+      returned: nativeReturned,
+      totalApproved: nativeTotalApproved
+    },
+    medicalLeave: {
+      approvedUnused: medicalApprovedUnused,
+      currentlyAway: medicalCurrentlyAway,
+      returned: medicalReturned,
+      totalApproved: medicalTotalApproved
+    },
+    hostelStatus: {
+      totalRegistered,
+      currentlyPresent,
+      currentlyAway: allVerifiedAway,
+      approvedUnused: allApprovedUnused,
+      unverifiedCount,
+      presencePercentage,
+      isEstimated: true // Explicitly flagged as estimate based on verified gate records
+    },
+    blockBreakdown,
+    lastUpdated: new Date().toISOString()
+  };
+}
+
+/**
+ * Returns privacy-sanitized drill-down records for sanitation operations.
+ * CRITICAL PRIVACY PROTECTION:
+ * Strips out diseaseType, medicalDetails, clinical notes, and prescription flags.
+ * Exposes strictly minimum operational fields: student name, reg no, block, room, departure/return dates, status.
+ */
+export function getSanitizedOperationalSanitationRecords(
+  requests: OutpassRequest[],
+  blockFilter: string = 'ALL'
+): OperationalSanitationRecord[] {
+  const filtered = requests.filter(r => {
+    if (blockFilter !== 'ALL' && r.hostelBlock !== blockFilter) return false;
+    return isApprovedMedicalRequest(r);
+  });
+
+  return filtered.map(r => {
+    let gateStatus: OperationalSanitationRecord['gateStatus'] = 'PENDING';
+    if (r.status === 'APPROVED' && (!r.gateLogs || !r.gateLogs.departedAt)) {
+      gateStatus = 'APPROVED_NOT_DEPARTED';
+    } else if (r.status === 'OUT_OF_CAMPUS') {
+      gateStatus = 'CURRENTLY_AWAY';
+    } else if (r.status === 'RETURNED_TO_CAMPUS') {
+      gateStatus = 'RETURNED';
+    }
+
+    return {
+      outpassId: r.outpassId,
+      studentName: r.studentName,
+      studentRegNo: r.studentRegNo,
+      hostelBlock: r.hostelBlock,
+      roomNumber: r.roomNumber,
+      departureDateTime: r.departureDateTime,
+      returnDateTime: r.returnDateTime,
+      status: r.status,
+      gateStatus,
+      departedAt: r.gateLogs?.departedAt,
+      returnedAt: r.gateLogs?.returnedAt,
+      emergencyContact: r.parentPhone || r.studentPhone,
+      updatedAt: r.updatedAt
+    };
+  });
+}
+
+// =========================================================================
+// HOLIDAY HOSTEL OCCUPANCY & MESS COUNT MODULE
+// =========================================================================
+
+export const DEFAULT_HOLIDAY_PERIODS: HolidayPeriod[] = [
+  {
+    id: 'deepavali-2026',
+    name: 'Deepavali Festival Vacation 2026',
+    startDate: '2026-11-06',
+    endDate: '2026-11-12',
+    submissionDeadline: '2026-11-04T18:00:00.000Z',
+    academicYear: '2026-2027',
+    description: 'Mandatory declaration for hostel stay and mess catering arrangements during Deepavali vacation break.',
+    isActive: true
+  },
+  {
+    id: 'winter-break-2026',
+    name: 'Semester Winter Vacation 2026',
+    startDate: '2026-12-18',
+    endDate: '2027-01-03',
+    submissionDeadline: '2026-12-15T18:00:00.000Z',
+    academicYear: '2026-2027',
+    description: 'End-semester winter holidays and hostel mess operation planning window.',
+    isActive: true
+  },
+  {
+    id: 'pongal-2027',
+    name: 'Pongal Festival Holidays 2027',
+    startDate: '2027-01-13',
+    endDate: '2027-01-19',
+    submissionDeadline: '2027-01-11T18:00:00.000Z',
+    academicYear: '2026-2027',
+    description: 'Tamil harvest festival holiday break mess headcount schedule.',
+    isActive: true
+  }
+];
+
+export function getLocalHolidayPeriods(): HolidayPeriod[] {
+  if (typeof localStorage === 'undefined') return DEFAULT_HOLIDAY_PERIODS;
+  try {
+    const raw = localStorage.getItem(LOCAL_HOLIDAY_PERIODS_KEY);
+    return raw ? JSON.parse(raw) : DEFAULT_HOLIDAY_PERIODS;
+  } catch {
+    return DEFAULT_HOLIDAY_PERIODS;
+  }
+}
+
+export function saveLocalHolidayPeriods(periods: HolidayPeriod[]) {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(LOCAL_HOLIDAY_PERIODS_KEY, JSON.stringify(periods));
+  } catch {
+    // Ignore
+  }
+}
+
+export function getLocalHolidayDeclarations(): HolidayDeclaration[] {
+  if (typeof localStorage === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(LOCAL_HOLIDAY_DECLARATIONS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveLocalHolidayDeclaration(dec: HolidayDeclaration) {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const list = getLocalHolidayDeclarations().filter(d => d.id !== dec.id);
+    list.unshift(dec);
+    localStorage.setItem(LOCAL_HOLIDAY_DECLARATIONS_KEY, JSON.stringify(list));
+  } catch {
+    // Ignore
+  }
+}
+
+/**
+ * Fetch active holiday periods from Firestore or local fallback
+ */
+export async function getHolidayPeriods(): Promise<HolidayPeriod[]> {
+  try {
+    const snap = await getDoc(doc(db, 'system_config', 'holiday_periods'));
+    if (snap.exists()) {
+      const data = snap.data();
+      if (Array.isArray(data.periods) && data.periods.length > 0) {
+        saveLocalHolidayPeriods(data.periods);
+        return data.periods;
+      }
+    }
+  } catch {
+    // Fallback to local
+  }
+  return getLocalHolidayPeriods();
+}
+
+/**
+ * Fetch a single holiday period by ID
+ */
+export async function getHolidayPeriodById(periodId: string): Promise<HolidayPeriod | null> {
+  const periods = await getHolidayPeriods();
+  return periods.find(p => p.id === periodId) || null;
+}
+
+/**
+ * Fetch existing declaration for a specific student and holiday period.
+ * Ensures student can view and update their own existing declaration.
+ */
+export async function getStudentHolidayDeclaration(
+  studentRegNo: string,
+  periodId: string
+): Promise<HolidayDeclaration | null> {
+  const cleanRegNo = normalizeId(studentRegNo);
+  const declarationId = `DEC_${periodId}_${cleanRegNo}`;
+
+  // 1. Direct Firestore fetch
+  try {
+    const snap = await getDoc(doc(db, 'holiday_declarations', declarationId));
+    if (snap.exists()) {
+      const dec = snap.data() as HolidayDeclaration;
+      saveLocalHolidayDeclaration(dec);
+      return dec;
+    }
+  } catch {
+    // Fallback to local cache
+  }
+
+  // 2. Check local cache
+  const local = getLocalHolidayDeclarations().find(d => d.id === declarationId);
+  return local || null;
+}
+
+/**
+ * Fetch all declarations for a holiday period (for Mess Staff & EW).
+ */
+export async function getAllHolidayDeclarations(periodId: string): Promise<HolidayDeclaration[]> {
+  // 1. Check system_config partition
+  try {
+    const snap = await getDoc(doc(db, 'system_config', `holiday_declarations_${periodId}`));
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data.declarationsMap) {
+        const list = Object.values(data.declarationsMap) as HolidayDeclaration[];
+        list.forEach(d => saveLocalHolidayDeclaration(d));
+        return list;
+      }
+    }
+  } catch {
+    // Fallback
+  }
+
+  // 2. Local cache fallback
+  return getLocalHolidayDeclarations().filter(d => d.periodId === periodId);
+}
+
+/**
+ * Submits or Updates a student's holiday hostel & mess declaration.
+ * - Prevents duplicate declarations (strictly unique per student + period)
+ * - Updates existing declaration rather than duplicating
+ * - Validates submission deadline
+ * - Validates date bounds within holiday period
+ * - Logs audit action
+ */
+export async function submitHolidayDeclaration(
+  declarationData: {
+    studentId: string;
+    studentRegNo: string;
+    studentName: string;
+    hostelBlock: string;
+    roomNumber: string;
+    periodId: string;
+    stayingInHostel: boolean;
+    presenceDates: string[];
+    mealsByDate: Record<string, DailyMealRequirement>;
+    operationalNotes?: string;
+  },
+  actorUser: UserProfile
+): Promise<{ success: boolean; declaration?: HolidayDeclaration; error?: string }> {
+  const cleanRegNo = normalizeId(declarationData.studentRegNo);
+  if (!cleanRegNo) {
+    return { success: false, error: 'A valid student register number is required.' };
+  }
+
+  // 1. Validate Period
+  const period = await getHolidayPeriodById(declarationData.periodId);
+  if (!period) {
+    return { success: false, error: 'Selected holiday period is invalid or not found.' };
+  }
+
+  // 2. Deadline Check (unless EW/Admin)
+  if (actorUser.role === 'STUDENT') {
+    const deadlineTime = new Date(period.submissionDeadline).getTime();
+    if (Date.now() > deadlineTime) {
+      return { 
+        success: false, 
+        error: `Submission deadline (${new Date(period.submissionDeadline).toLocaleString('en-IN')}) for this holiday period has passed. Please contact the Executive Warden office for manual accommodation permits.` 
+      };
+    }
+  }
+
+  // 3. Date Bounds Validation
+  const periodStart = new Date(period.startDate).getTime();
+  const periodEnd = new Date(period.endDate).getTime();
+
+  if (declarationData.stayingInHostel) {
+    if (!declarationData.presenceDates || declarationData.presenceDates.length === 0) {
+      return { success: false, error: 'Please select at least one expected date of presence in the hostel.' };
+    }
+
+    for (const d of declarationData.presenceDates) {
+      const t = new Date(d).getTime();
+      if (t < periodStart || t > periodEnd) {
+        return { success: false, error: `Presence date ${d} falls outside the holiday period (${period.startDate} to ${period.endDate}).` };
+      }
+    }
+  }
+
+  const declarationId = `DEC_${declarationData.periodId}_${cleanRegNo}`;
+  const now = new Date().toISOString();
+
+  // Check for existing declaration to preserve original submittedAt timestamp
+  const existing = await getStudentHolidayDeclaration(declarationData.studentRegNo, declarationData.periodId);
+  const isUpdate = Boolean(existing);
+
+  const cleanDeclaration: HolidayDeclaration = {
+    id: declarationId,
+    studentId: declarationData.studentId,
+    studentRegNo: declarationData.studentRegNo.trim(),
+    studentName: declarationData.studentName.trim(),
+    hostelBlock: declarationData.hostelBlock.trim(),
+    roomNumber: declarationData.roomNumber.trim(),
+    periodId: declarationData.periodId,
+    stayingInHostel: declarationData.stayingInHostel,
+    presenceDates: declarationData.stayingInHostel ? declarationData.presenceDates.sort() : [],
+    mealsByDate: declarationData.stayingInHostel ? declarationData.mealsByDate : {},
+    operationalNotes: declarationData.operationalNotes ? declarationData.operationalNotes.trim().slice(0, 300) : '',
+    submittedAt: existing?.submittedAt || now,
+    updatedAt: now,
+    academicYear: period.academicYear || getAcademicYear()
+  };
+
+  // 4. Save to Local Cache (0ms)
+  saveLocalHolidayDeclaration(cleanDeclaration);
+
+  // 5. Commit to Firestore
+  try {
+    await setDoc(doc(db, 'holiday_declarations', declarationId), cleanDeclaration, { merge: true });
+    
+    // Centralized partition for instant aggregate reads
+    await setDoc(doc(db, 'system_config', `holiday_declarations_${period.id}`), {
+      periodId: period.id,
+      declarationsMap: {
+        [declarationId]: cleanDeclaration
+      },
+      lastUpdated: now
+    }, { merge: true });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, `holiday_declarations/${declarationId}`);
+  }
+
+  // 6. Record Audit Log
+  recordAuditLog({
+    eventId: `LOG_HOLIDAY_${declarationId}_${Date.now()}`,
+    outpassId: declarationId,
+    action: isUpdate ? 'HOLIDAY_DECLARATION_UPDATED' : 'HOLIDAY_DECLARATION_SUBMITTED',
+    actorRole: actorUser.role,
+    actorName: actorUser.name,
+    actorId: actorUser.uniqueId,
+    timestamp: now,
+    remarks: `${isUpdate ? 'Updated' : 'Submitted'} holiday presence declaration for ${period.name}. Staying: ${cleanDeclaration.stayingInHostel ? 'YES' : 'NO'}. Dates: ${cleanDeclaration.presenceDates.length} days.`,
+    academicYear: cleanDeclaration.academicYear
+  }).catch(() => {});
+
+  return { success: true, declaration: cleanDeclaration };
+}
+
+/**
+ * Generates dates list between start and end (inclusive)
+ */
+export function generateDateRangeList(startDateStr: string, endDateStr: string): string[] {
+  const dates: string[] = [];
+  const current = new Date(startDateStr);
+  const end = new Date(endDateStr);
+
+  while (current <= end) {
+    dates.push(current.toISOString().split('T')[0]);
+    current.setDate(current.getDate() + 1);
+  }
+  return dates;
+}
+
+/**
+ * Computes Mess Planning Report for authorized staff:
+ * - Expected students staying per date
+ * - Expected breakfast, lunch, and dinner counts
+ * - Breakdown by hostel block
+ * - Submission rate & list of non-respondents (WITHOUT assuming non-respondents are absent or present)
+ * - Reporting period and disclaimer
+ */
+export async function calculateMessPlanningReport(
+  periodId: string,
+  allStudentsList?: UserProfile[]
+): Promise<MessPlanningReport> {
+  const period = await getHolidayPeriodById(periodId) || DEFAULT_HOLIDAY_PERIODS[0];
+  const declarations = await getAllHolidayDeclarations(period.id);
+  const allUsers = allStudentsList || getLocalUsers();
+  const registeredStudents = allUsers.filter(u => u.role === 'STUDENT');
+
+  const totalRegisteredStudents = Math.max(registeredStudents.length, TOTAL_CAMPUS_CAPACITY);
+  const totalSubmissions = declarations.length;
+  const submissionRate = Number(((totalSubmissions / Math.max(1, registeredStudents.length)) * 100).toFixed(1));
+
+  // Identify non-respondents without assuming they are absent or present
+  const respondedRegNos = new Set(declarations.map(d => normalizeId(d.studentRegNo)));
+  const nonRespondents = registeredStudents
+    .filter(s => !respondedRegNos.has(normalizeId(s.uniqueId)))
+    .map(s => ({
+      studentRegNo: s.uniqueId,
+      studentName: s.name,
+      hostelBlock: s.hostelBlock || 'Unassigned',
+      roomNumber: s.roomNumber || 'N/A'
+    }));
+
+  // Daily aggregations across the period
+  const dateList = generateDateRangeList(period.startDate, period.endDate);
+  const dailyReports: MessDailyReport[] = dateList.map(date => {
+    let expectedOccupancy = 0;
+    let breakfastCount = 0;
+    let lunchCount = 0;
+    let dinnerCount = 0;
+
+    const blockBreakdown: Record<string, {
+      occupancy: number;
+      breakfast: number;
+      lunch: number;
+      dinner: number;
+    }> = {};
+
+    HOSTEL_BLOCKS.forEach(b => {
+      blockBreakdown[b] = { occupancy: 0, breakfast: 0, lunch: 0, dinner: 0 };
+    });
+
+    declarations.forEach(dec => {
+      if (dec.stayingInHostel && dec.presenceDates.includes(date)) {
+        expectedOccupancy++;
+        const meals = dec.mealsByDate[date];
+        const hasBreakfast = meals ? Boolean(meals.breakfast) : true;
+        const hasLunch = meals ? Boolean(meals.lunch) : true;
+        const hasDinner = meals ? Boolean(meals.dinner) : true;
+
+        if (hasBreakfast) breakfastCount++;
+        if (hasLunch) lunchCount++;
+        if (hasDinner) dinnerCount++;
+
+        const block = dec.hostelBlock || 'Marutham';
+        if (!blockBreakdown[block]) {
+          blockBreakdown[block] = { occupancy: 0, breakfast: 0, lunch: 0, dinner: 0 };
+        }
+        blockBreakdown[block].occupancy++;
+        if (hasBreakfast) blockBreakdown[block].breakfast++;
+        if (hasLunch) blockBreakdown[block].lunch++;
+        if (hasDinner) blockBreakdown[block].dinner++;
+      }
+    });
+
+    return {
+      date,
+      expectedOccupancy,
+      breakfastCount,
+      lunchCount,
+      dinnerCount,
+      blockBreakdown
+    };
+  });
+
+  return {
+    period,
+    lastUpdated: new Date().toISOString(),
+    totalRegisteredStudents,
+    totalSubmissions,
+    submissionRate,
+    nonRespondentsCount: nonRespondents.length,
+    nonRespondents,
+    dailyReports,
+    disclaimer: 'Official Planning Estimates: Aggregate mess counts and occupancy figures are calculated strictly from submitted student declarations. Students who have not yet responded are tracked as pending and are NOT assumed to be either present or absent.'
+  };
+}
+
 /**
  * Seed initial demo data safely ONCE to ensure all devices see instant baseline data
  */
@@ -944,18 +1549,6 @@ export async function seedInitialDemoData(): Promise<void> {
       roomNumber: '6206',
       branch: 'Computer Science & Engineering (CSE)',
       year: 'I',
-      password: 'password123',
-      createdAt: '2026-10-23T16:00:00.000Z'
-    },
-    {
-      id: 'USR_RC-983',
-      uniqueId: 'RC-983',
-      role: 'RC',
-      name: 'Robert',
-      email: 'robert.rc@mitindia.edu',
-      phone: '9876543210',
-      hostelBlock: 'Thamirabarani',
-      designation: 'Resident Counsellor (Thamirabarani Block)',
       password: 'password123',
       createdAt: '2026-10-23T16:00:00.000Z'
     },
@@ -992,6 +1585,48 @@ export async function seedInitialDemoData(): Promise<void> {
       createdAt: '2024-08-01T08:00:00.000Z'
     },
     {
+      id: 'USR_2024508012',
+      uniqueId: '2024508012',
+      role: 'STUDENT',
+      name: 'M. Naveen Kumar',
+      email: 'naveen.2024508012@annauniv.edu',
+      phone: '+91 94433 11223',
+      hostelBlock: 'Kaveri',
+      roomNumber: '108',
+      branch: 'Information Technology (IT)',
+      year: 'II',
+      parentPhone: '+91 94433 99887',
+      password: 'password123',
+      createdAt: '2024-08-01T08:00:00.000Z'
+    },
+    {
+      id: 'USR_2024509033',
+      uniqueId: '2024509033',
+      role: 'STUDENT',
+      name: 'P. Priya Dharshini',
+      email: 'priya.2024509033@annauniv.edu',
+      phone: '+91 98765 43219',
+      hostelBlock: 'Amaravathi',
+      roomNumber: '402',
+      branch: 'Electronics & Communication Engineering (ECE)',
+      year: 'II',
+      parentPhone: '+91 98765 11111',
+      password: 'password123',
+      createdAt: '2024-08-01T08:00:00.000Z'
+    },
+    {
+      id: 'USR_RC-983',
+      uniqueId: 'RC-983',
+      role: 'RC',
+      name: 'Robert',
+      email: 'robert.rc@mitindia.edu',
+      phone: '9876543210',
+      hostelBlock: 'Thamirabarani',
+      designation: 'Resident Counsellor (Thamirabarani Block)',
+      password: 'password123',
+      createdAt: '2026-10-23T16:00:00.000Z'
+    },
+    {
       id: 'USR_RC-MANICKAM',
       uniqueId: 'RC-MANICKAM',
       role: 'RC',
@@ -1024,6 +1659,17 @@ export async function seedInitialDemoData(): Promise<void> {
       gateLocation: 'Main Gate (GST Road)',
       password: 'password123',
       createdAt: '2024-08-01T08:00:00.000Z'
+    },
+    {
+      id: 'USR_MESS-CHEF-01',
+      uniqueId: 'MESS-CHEF-01',
+      role: 'MESS_STAFF',
+      name: 'K. Arumugam (Hostel Mess Supervisor)',
+      email: 'mess.supervisor@mitindia.edu',
+      phone: '+91 94445 67890',
+      designation: 'Hostel Mess Supervisor & Catering Head',
+      password: 'password123',
+      createdAt: '2024-08-01T08:00:00.000Z'
     }
   ];
 
@@ -1031,10 +1677,216 @@ export async function seedInitialDemoData(): Promise<void> {
     saveLocalUser(u);
   }
 
-  // Pre-seed known requests from Vibin Appachi
+  // Pre-seed realistic outpasses covering:
+  // - Native Place: Approved (not exited), Exited (currently away), Returned
+  // - Medical Leave: Approved (not exited), Exited (currently away), Returned
   const sampleRequests: OutpassRequest[] = [
+    // 1. Native Place - Currently Away (Verified gate departure)
     {
-      outpassId: 'OP-2026-1384',
+      outpassId: 'OP-2026-1042',
+      studentId: 'USR_2026503040',
+      studentName: 'Vibin Appachi',
+      studentRegNo: '2026503040',
+      hostelBlock: 'Thamirabarani',
+      roomNumber: '6206',
+      branch: 'Computer Science & Engineering (CSE)',
+      year: 'I',
+      studentPhone: '9363622865',
+      parentPhone: '9363622865',
+      destination: 'Madurai (Native Place)',
+      visitAddress: '12 Koodal Nagar, Madurai',
+      purpose: 'Family visit to native place',
+      category: 'NATIVE',
+      isNativePlace: true,
+      proposedDays: 3,
+      departureDateTime: '2026-10-25T10:00:00.000Z',
+      returnDateTime: '2026-10-28T18:00:00.000Z',
+      status: 'OUT_OF_CAMPUS',
+      gateLogs: {
+        departedAt: '2026-10-25T10:15:00.000Z',
+        departedGatekeeperId: 'SEC-GATE-01',
+        departedGatekeeperName: 'M. Selvam',
+        departedGatePost: 'Main Gate (GST Road)',
+        securityNote: 'Exited through Main Gate with valid luggage'
+      },
+      rcDecision: {
+        decision: 'APPROVED',
+        rcId: 'RC-983',
+        rcName: 'Robert',
+        remarks: 'Parent call verified',
+        parentCallVerified: true,
+        decidedAt: '2026-10-24T18:00:00.000Z'
+      },
+      verificationToken: 'TOKEN-NAT-1042',
+      academicYear: '2026-2027',
+      createdAt: '2026-10-24T14:00:00.000Z',
+      updatedAt: '2026-10-25T10:15:00.000Z'
+    },
+    // 2. Native Place - Approved Unused (Not exited yet)
+    {
+      outpassId: 'OP-2026-1088',
+      studentId: 'USR_2022506042',
+      studentName: 'K. Vigneshwaran',
+      studentRegNo: '2022506042',
+      hostelBlock: 'Marutham',
+      roomNumber: '204',
+      branch: 'Artificial Intelligence & Data Science (AI&DS)',
+      year: 'III',
+      studentPhone: '+91 98401 23456',
+      parentPhone: '+91 94441 98765',
+      destination: 'Coimbatore (Hometown)',
+      visitAddress: '45 Gandhipuram, Coimbatore',
+      purpose: 'Visiting parents at native hometown',
+      category: 'NATIVE',
+      isNativePlace: true,
+      proposedDays: 4,
+      departureDateTime: '2026-10-28T06:00:00.000Z',
+      returnDateTime: '2026-11-01T20:00:00.000Z',
+      status: 'APPROVED',
+      rcDecision: {
+        decision: 'APPROVED',
+        rcId: 'RC-MANICKAM',
+        rcName: 'Dr. R. Manickam',
+        remarks: 'Approved for native travel',
+        parentCallVerified: true,
+        decidedAt: '2026-10-27T08:30:00.000Z'
+      },
+      verificationToken: 'TOKEN-NAT-1088',
+      academicYear: '2026-2027',
+      createdAt: '2026-10-26T19:00:00.000Z',
+      updatedAt: '2026-10-27T08:30:00.000Z'
+    },
+    // 3. Native Place - Returned to Campus
+    {
+      outpassId: 'OP-2026-0955',
+      studentId: 'USR_2024508012',
+      studentName: 'M. Naveen Kumar',
+      studentRegNo: '2024508012',
+      hostelBlock: 'Kaveri',
+      roomNumber: '108',
+      branch: 'Information Technology (IT)',
+      year: 'II',
+      studentPhone: '+91 94433 11223',
+      parentPhone: '+91 94433 99887',
+      destination: 'Salem (Native Place)',
+      visitAddress: '7 Fairlands, Salem',
+      purpose: 'Family wedding at native town',
+      category: 'NATIVE',
+      isNativePlace: true,
+      proposedDays: 2,
+      departureDateTime: '2026-10-20T08:00:00.000Z',
+      returnDateTime: '2026-10-22T20:00:00.000Z',
+      status: 'RETURNED_TO_CAMPUS',
+      gateLogs: {
+        departedAt: '2026-10-20T08:30:00.000Z',
+        departedGatekeeperId: 'SEC-GATE-01',
+        departedGatekeeperName: 'M. Selvam',
+        returnedAt: '2026-10-22T19:15:00.000Z',
+        returnedGatekeeperId: 'SEC-GATE-01',
+        returnedGatekeeperName: 'M. Selvam',
+        isLate: false,
+        securityNote: 'Returned on time'
+      },
+      verificationToken: 'TOKEN-NAT-0955',
+      academicYear: '2026-2027',
+      createdAt: '2026-10-19T10:00:00.000Z',
+      updatedAt: '2026-10-22T19:15:00.000Z'
+    },
+    // 4. Medical Leave - Currently Away (Exited campus for home recovery)
+    {
+      outpassId: 'OP-2026-2201',
+      studentId: 'USR_2023504018',
+      studentName: 'Ananya R.',
+      studentRegNo: '2023504018',
+      hostelBlock: 'Thamirabarani',
+      roomNumber: '312',
+      branch: 'Computer Science & Engineering (CSE)',
+      year: 'II',
+      studentPhone: '+91 97910 54321',
+      parentPhone: '+91 98840 87654',
+      destination: 'Tiruchirappalli',
+      visitAddress: 'Thillai Nagar, Trichy',
+      purpose: 'Medical home rest as advised by physician',
+      category: 'MEDICAL',
+      isMedicalLeave: true,
+      diseaseType: 'Viral Fever / High Temperature',
+      medicalDetails: {
+        diseaseType: 'Viral Fever / High Temperature',
+        hospitalClinic: 'MIT Health Centre & Dr. Mehta',
+        doctorName: 'Dr. S. Revathi',
+        bedRestDays: 5,
+        symptoms: 'Fever 102F and chills',
+        prescriptionUploaded: true
+      },
+      proposedDays: 5,
+      departureDateTime: '2026-10-24T12:00:00.000Z',
+      returnDateTime: '2026-10-29T18:00:00.000Z',
+      status: 'OUT_OF_CAMPUS',
+      gateLogs: {
+        departedAt: '2026-10-24T12:45:00.000Z',
+        departedGatekeeperId: 'SEC-GATE-01',
+        departedGatekeeperName: 'M. Selvam',
+        departedGatePost: 'Main Gate (GST Road)',
+        securityNote: 'Medical escort provided by guardian'
+      },
+      rcDecision: {
+        decision: 'APPROVED',
+        rcId: 'RC-983',
+        rcName: 'Robert',
+        remarks: 'Medical certificate verified',
+        parentCallVerified: true,
+        decidedAt: '2026-10-24T11:00:00.000Z'
+      },
+      verificationToken: 'TOKEN-MED-2201',
+      academicYear: '2026-2027',
+      createdAt: '2026-10-24T09:00:00.000Z',
+      updatedAt: '2026-10-24T12:45:00.000Z'
+    },
+    // 5. Medical Leave - Approved Unused (Sanctioned, preparing to depart)
+    {
+      outpassId: 'OP-2026-2244',
+      studentId: 'USR_2024509033',
+      studentName: 'P. Priya Dharshini',
+      studentRegNo: '2024509033',
+      hostelBlock: 'Amaravathi',
+      roomNumber: '402',
+      branch: 'Electronics & Communication Engineering (ECE)',
+      year: 'II',
+      studentPhone: '+91 98765 43219',
+      parentPhone: '+91 98765 11111',
+      destination: 'Vellore',
+      visitAddress: 'Katpadi, Vellore',
+      purpose: 'Orthopedic sprain recovery at home',
+      category: 'MEDICAL',
+      isMedicalLeave: true,
+      diseaseType: 'Orthopedic / Fracture / Ligament Tear',
+      medicalDetails: {
+        diseaseType: 'Orthopedic / Fracture / Ligament Tear',
+        hospitalClinic: 'Apollo Speciality Hospitals',
+        doctorName: 'Dr. K. Balaji',
+        bedRestDays: 7,
+        prescriptionUploaded: true
+      },
+      proposedDays: 7,
+      departureDateTime: '2026-10-27T18:00:00.000Z',
+      returnDateTime: '2026-11-03T18:00:00.000Z',
+      status: 'APPROVED',
+      rcDecision: {
+        decision: 'APPROVED',
+        rcId: 'RC-MANICKAM',
+        rcName: 'Dr. R. Manickam',
+        remarks: 'Approved on medical recommendation',
+        parentCallVerified: true,
+        decidedAt: '2026-10-27T10:00:00.000Z'
+      },
+      verificationToken: 'TOKEN-MED-2244',
+      academicYear: '2026-2027',
+      createdAt: '2026-10-27T07:00:00.000Z',
+      updatedAt: '2026-10-27T10:00:00.000Z'
+    },
+    // 6. Medical Leave - Returned Safely
+    {
+      outpassId: 'OP-2026-2180',
       studentId: 'USR_2026503040',
       studentName: 'Vibin Appachi',
       studentRegNo: '2026503040',
@@ -1046,61 +1898,29 @@ export async function seedInitialDemoData(): Promise<void> {
       parentPhone: '9363622865',
       destination: 'Madurai',
       visitAddress: 'Koodal nagar',
-      purpose: 'Family visit',
-      proposedDays: 2,
-      departureDateTime: '2026-10-26T19:22:00.000Z',
-      returnDateTime: '2026-10-28T19:22:00.000Z',
-      status: 'PENDING_RC',
-      verificationToken: 'TOKEN-J6CZNNIC',
+      purpose: 'Viral fever recovery',
+      category: 'MEDICAL',
+      isMedicalLeave: true,
+      diseaseType: 'Viral Fever / High Temperature',
+      medicalDetails: {
+        diseaseType: 'Viral Fever / High Temperature',
+        hospitalClinic: 'MIT Health Centre'
+      },
+      proposedDays: 3,
+      departureDateTime: '2026-10-18T10:00:00.000Z',
+      returnDateTime: '2026-10-21T18:00:00.000Z',
+      status: 'RETURNED_TO_CAMPUS',
+      gateLogs: {
+        departedAt: '2026-10-18T10:30:00.000Z',
+        departedGatekeeperId: 'SEC-GATE-01',
+        returnedAt: '2026-10-21T17:40:00.000Z',
+        returnedGatekeeperId: 'SEC-GATE-01',
+        isLate: false
+      },
+      verificationToken: 'TOKEN-MED-2180',
       academicYear: '2026-2027',
-      createdAt: '2026-10-26T17:22:24.613Z',
-      updatedAt: '2026-10-26T17:22:24.613Z'
-    },
-    {
-      outpassId: 'OP-2026-7341',
-      studentId: 'USR_2026503040',
-      studentName: 'Vibin Appachi',
-      studentRegNo: '2026503040',
-      hostelBlock: 'Thamirabarani',
-      roomNumber: '6206',
-      branch: 'Computer Science & Engineering (CSE)',
-      year: 'I',
-      studentPhone: '9363622865',
-      parentPhone: '9363622865',
-      destination: 'Cuddalore',
-      visitAddress: 'RMK engineering college',
-      purpose: 'Event OD',
-      proposedDays: 2,
-      departureDateTime: '2026-10-23T18:39:00.000Z',
-      returnDateTime: '2026-10-25T18:39:00.000Z',
-      status: 'PENDING_RC',
-      verificationToken: 'TOKEN-1CLR6AD9',
-      academicYear: '2026-2027',
-      createdAt: '2026-10-23T16:40:12.716Z',
-      updatedAt: '2026-10-23T16:40:12.716Z'
-    },
-    {
-      outpassId: 'OP-2026-2005',
-      studentId: 'USR_2026503040',
-      studentName: 'Vibin Appachi',
-      studentRegNo: '2026503040',
-      hostelBlock: 'Thamirabarani',
-      roomNumber: '6206',
-      branch: 'Computer Science & Engineering (CSE)',
-      year: 'I',
-      studentPhone: '9363622865',
-      parentPhone: '9363622865',
-      destination: 'Madurai',
-      visitAddress: 'Koodal nagar',
-      purpose: 'Family visit',
-      proposedDays: 2,
-      departureDateTime: '2026-10-23T18:00:00.000Z',
-      returnDateTime: '2026-10-25T18:00:00.000Z',
-      status: 'PENDING_RC',
-      verificationToken: 'TOKEN-1KIXEOHU',
-      academicYear: '2026-2027',
-      createdAt: '2026-10-23T16:01:11.043Z',
-      updatedAt: '2026-10-23T16:01:11.043Z'
+      createdAt: '2026-10-18T08:00:00.000Z',
+      updatedAt: '2026-10-21T17:40:00.000Z'
     }
   ];
 
@@ -1108,30 +1928,121 @@ export async function seedInitialDemoData(): Promise<void> {
     saveLocalRequest(r);
   }
 
+  // Pre-seed holiday periods and sample declarations
+  saveLocalHolidayPeriods(DEFAULT_HOLIDAY_PERIODS);
+
+  const sampleDeclarations: HolidayDeclaration[] = [
+    {
+      id: 'DEC_deepavali-2026_2022506042',
+      studentId: 'USR_2022506042',
+      studentRegNo: '2022506042',
+      studentName: 'K. Vigneshwaran',
+      hostelBlock: 'Marutham',
+      roomNumber: '204',
+      periodId: 'deepavali-2026',
+      stayingInHostel: true,
+      presenceDates: ['2026-11-06', '2026-11-07', '2026-11-08'],
+      mealsByDate: {
+        '2026-11-06': { breakfast: true, lunch: true, dinner: true },
+        '2026-11-07': { breakfast: true, lunch: true, dinner: true },
+        '2026-11-08': { breakfast: true, lunch: false, dinner: true }
+      },
+      operationalNotes: 'Preparing for gate exam coaching classes',
+      submittedAt: '2026-10-25T10:00:00.000Z',
+      updatedAt: '2026-10-25T10:00:00.000Z',
+      academicYear: '2026-2027'
+    },
+    {
+      id: 'DEC_deepavali-2026_2026503040',
+      studentId: 'USR_2026503040',
+      studentName: 'Vibin Appachi',
+      studentRegNo: '2026503040',
+      hostelBlock: 'Thamirabarani',
+      roomNumber: '6206',
+      periodId: 'deepavali-2026',
+      stayingInHostel: false,
+      presenceDates: [],
+      mealsByDate: {},
+      operationalNotes: 'Traveling home to Madurai for Diwali celebration with parents',
+      submittedAt: '2026-10-26T14:30:00.000Z',
+      updatedAt: '2026-10-26T14:30:00.000Z',
+      academicYear: '2026-2027'
+    },
+    {
+      id: 'DEC_deepavali-2026_2024508012',
+      studentId: 'USR_2024508012',
+      studentName: 'M. Naveen Kumar',
+      studentRegNo: '2024508012',
+      hostelBlock: 'Kaveri',
+      roomNumber: '108',
+      periodId: 'deepavali-2026',
+      stayingInHostel: true,
+      presenceDates: ['2026-11-06', '2026-11-07', '2026-11-08', '2026-11-09', '2026-11-10', '2026-11-11', '2026-11-12'],
+      mealsByDate: {
+        '2026-11-06': { breakfast: true, lunch: true, dinner: true },
+        '2026-11-07': { breakfast: true, lunch: true, dinner: true },
+        '2026-11-08': { breakfast: true, lunch: true, dinner: true },
+        '2026-11-09': { breakfast: true, lunch: true, dinner: true },
+        '2026-11-10': { breakfast: true, lunch: true, dinner: true },
+        '2026-11-11': { breakfast: true, lunch: true, dinner: true },
+        '2026-11-12': { breakfast: true, lunch: true, dinner: true }
+      },
+      operationalNotes: 'Library project research',
+      submittedAt: '2026-10-26T18:00:00.000Z',
+      updatedAt: '2026-10-26T18:00:00.000Z',
+      academicYear: '2026-2027'
+    }
+  ];
+
+  for (const d of sampleDeclarations) {
+    saveLocalHolidayDeclaration(d);
+  }
+
   if (typeof localStorage !== 'undefined' && localStorage.getItem(SEED_FLAG_KEY)) {
     return;
   }
 
   try {
-    // Seed users to system_config/user_registry
+    // 1. Seed users to system_config/user_registry
     const userMap: Record<string, UserProfile> = {};
     for (const u of seedUsers) {
       userMap[normalizeId(u.uniqueId)] = u;
     }
     await setDoc(doc(db, 'system_config', 'user_registry'), userMap, { merge: true });
 
-    // Seed outpasses to system_config/outpass_registry
+    // 2. Seed outpasses to system_config/outpass_registry
     const outpassMap: Record<string, OutpassRequest> = {};
     for (const r of sampleRequests) {
       outpassMap[r.outpassId] = r;
+      // also write to requests collection
+      await setDoc(doc(db, 'requests', r.outpassId), r, { merge: true });
     }
     await setDoc(doc(db, 'system_config', 'outpass_registry'), {
       outpassesMap: outpassMap,
       lastUpdated: new Date().toISOString()
     }, { merge: true });
 
+    // 3. Seed holiday periods
+    await setDoc(doc(db, 'system_config', 'holiday_periods'), {
+      periods: DEFAULT_HOLIDAY_PERIODS,
+      lastUpdated: new Date().toISOString()
+    }, { merge: true });
+
+    // 4. Seed sample declarations
+    const decMap: Record<string, HolidayDeclaration> = {};
+    for (const d of sampleDeclarations) {
+      decMap[d.id] = d;
+      await setDoc(doc(db, 'holiday_declarations', d.id), d, { merge: true });
+    }
+    await setDoc(doc(db, 'system_config', 'holiday_declarations_deepavali-2026'), {
+      periodId: 'deepavali-2026',
+      declarationsMap: decMap,
+      lastUpdated: new Date().toISOString()
+    }, { merge: true });
+
     localStorage.setItem(SEED_FLAG_KEY, 'true');
   } catch {
-    // Offline or network hiccup, fallback to local cache
+    // Non-blocking fallback to local cache
   }
 }
+

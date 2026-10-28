@@ -9,12 +9,16 @@ import {
   Sun, 
   Moon, 
   Wifi,
-  Smartphone
+  Smartphone,
+  Utensils,
+  FileText
 } from 'lucide-react';
 
 interface NavbarProps {
   currentUser: UserProfile | null;
   currentRole: Role | null;
+  activeView?: 'OUTPASS' | 'HOLIDAY_MESS';
+  onSelectView?: (view: 'OUTPASS' | 'HOLIDAY_MESS') => void;
   onLogout: () => void;
   onSwitchRole: () => void;
   isDarkMode: boolean;
@@ -24,6 +28,8 @@ interface NavbarProps {
 export const Navbar: React.FC<NavbarProps> = ({
   currentUser,
   currentRole,
+  activeView = 'OUTPASS',
+  onSelectView,
   onLogout,
   onSwitchRole,
   isDarkMode,
@@ -39,6 +45,8 @@ export const Navbar: React.FC<NavbarProps> = ({
         return { label: 'Executive Warden', icon: Building2, bg: 'bg-blue-950/80 text-blue-300 border-blue-800/60' };
       case 'GATEKEEPER':
         return { label: 'Security Gatekeeper', icon: KeyRound, bg: 'bg-amber-950/80 text-amber-300 border-amber-800/60' };
+      case 'MESS_STAFF':
+        return { label: 'Mess & Catering Staff', icon: Utensils, bg: 'bg-orange-950/80 text-orange-300 border-orange-800/60' };
     }
   };
 
@@ -57,17 +65,46 @@ export const Navbar: React.FC<NavbarProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-bold text-sm sm:text-base tracking-tight text-white">
-                  MIT Hostel Digital Outpass
+                  DOMS-MIT Hostels
                 </span>
                 <span className="hidden md:inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-full bg-emerald-950/60 border border-emerald-800/60 text-emerald-400">
                   <Wifi className="w-3 h-3 animate-pulse" /> Live Cloud Sync
                 </span>
               </div>
               <p className="text-[11px] text-zinc-400 hidden sm:block">
-                Anna University • Chromepet, Chennai
+                Anna University • Digital Outpass & Mess Food Count
               </p>
             </div>
           </div>
+
+          {/* Navigation Items (Outpass vs Holiday Mess Count) */}
+          {currentUser && onSelectView && (
+            <div className="hidden sm:flex items-center gap-1.5 bg-zinc-900 p-1 rounded-xl border border-zinc-800">
+              <button
+                onClick={() => onSelectView('OUTPASS')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  activeView === 'OUTPASS'
+                    ? 'bg-zinc-800 text-white shadow'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                <FileText className="w-3.5 h-3.5 text-blue-400" />
+                <span>Outpass Dashboard</span>
+              </button>
+
+              <button
+                onClick={() => onSelectView('HOLIDAY_MESS')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  activeView === 'HOLIDAY_MESS'
+                    ? 'bg-amber-500 text-zinc-950 shadow'
+                    : 'text-zinc-400 hover:text-amber-300'
+                }`}
+              >
+                <Utensils className="w-3.5 h-3.5" />
+                <span>Holiday Hostel & Mess Count</span>
+              </button>
+            </div>
+          )}
 
           {/* Right actions */}
           <div className="flex items-center gap-2 sm:gap-3">
@@ -117,6 +154,31 @@ export const Navbar: React.FC<NavbarProps> = ({
             ) : null}
           </div>
         </div>
+
+        {/* Mobile Navigation Bar */}
+        {currentUser && onSelectView && (
+          <div className="sm:hidden flex items-center justify-around py-2 border-t border-zinc-800/80 bg-zinc-950/60 text-xs font-bold">
+            <button
+              onClick={() => onSelectView('OUTPASS')}
+              className={`flex items-center gap-1 px-3 py-1 rounded-lg ${
+                activeView === 'OUTPASS' ? 'bg-zinc-800 text-white' : 'text-zinc-400'
+              }`}
+            >
+              <FileText className="w-3.5 h-3.5 text-blue-400" />
+              <span>Outpass</span>
+            </button>
+
+            <button
+              onClick={() => onSelectView('HOLIDAY_MESS')}
+              className={`flex items-center gap-1 px-3 py-1 rounded-lg ${
+                activeView === 'HOLIDAY_MESS' ? 'bg-amber-500 text-zinc-950 font-black' : 'text-zinc-400'
+              }`}
+            >
+              <Utensils className="w-3.5 h-3.5" />
+              <span>Holiday Mess Count</span>
+            </button>
+          </div>
+        )}
       </div>
     </header>
   );

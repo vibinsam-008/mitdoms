@@ -10,7 +10,8 @@ import {
   CheckCircle2, 
   Database,
   Lock,
-  Clock
+  Clock,
+  Utensils
 } from 'lucide-react';
 
 interface WelcomeRoleSelectorProps {
@@ -93,6 +94,22 @@ export const WelcomeRoleSelector: React.FC<WelcomeRoleSelectorProps> = ({ onSele
       bgAccent: 'group-hover:border-blue-600/70 bg-zinc-900/60',
       borderAccent: 'border-zinc-800',
       textColor: 'text-blue-400'
+    },
+    {
+      role: 'MESS_STAFF',
+      title: 'Mess Supervisor',
+      subtitle: 'Holiday Catering Planning',
+      badge: 'Zero Food Wastage',
+      description: 'Access aggregate daily meal projections, hostel block dining breakdown, and track student holiday presence declarations.',
+      icon: Utensils,
+      highlights: [
+        'Daily breakfast, lunch, dinner estimates',
+        'Hostel block occupancy breakdown',
+        'Non-respondents tracking & CSV export'
+      ],
+      bgAccent: 'group-hover:border-amber-600/70 bg-zinc-900/60',
+      borderAccent: 'border-zinc-800',
+      textColor: 'text-amber-400'
     }
   ];
 

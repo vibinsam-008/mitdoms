@@ -8,6 +8,7 @@ import { StudentDashboard } from './components/StudentDashboard';
 import { RCDashboard } from './components/RCDashboard';
 import { GatekeeperDashboard } from './components/GatekeeperDashboard';
 import { EWDashboard } from './components/EWDashboard';
+import { HolidayMessModule } from './components/HolidayMessModule';
 import { 
   testConnection, 
 } from './firebase/config';
@@ -35,6 +36,7 @@ export default function App() {
   });
 
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [activeView, setActiveView] = useState<'OUTPASS' | 'HOLIDAY_MESS'>('OUTPASS');
   const [requests, setRequests] = useState<OutpassRequest[]>([]);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(true);
   const [syncLatencyMs, setSyncLatencyMs] = useState<number>(38);
@@ -121,6 +123,8 @@ export default function App() {
       <Navbar
         currentUser={currentUser}
         currentRole={currentRole}
+        activeView={activeView}
+        onSelectView={setActiveView}
         onLogout={handleLogout}
         onSwitchRole={handleSwitchRole}
         isDarkMode={isDarkMode}
@@ -153,26 +157,45 @@ export default function App() {
           />
         )}
 
-        {/* Step 3: Role-Specific Authenticated Dashboards */}
-        {currentUser && currentUser.role === 'STUDENT' && (
-          <StudentDashboard currentUser={currentUser} requests={requests} />
-        )}
-
-        {currentUser && currentUser.role === 'RC' && (
-          <RCDashboard 
-            currentUser={currentUser} 
-            requests={requests} 
-            onManualSync={handleManualSync}
-            syncLatencyMs={syncLatencyMs}
+        {/* Step 3: Role-Specific Authenticated Dashboards & Holiday Mess Count */}
+        {currentUser && activeView === 'HOLIDAY_MESS' && (
+          <HolidayMessModule
+            currentUser={currentUser}
+            onNavigateToEW={() => setActiveView('OUTPASS')}
           />
         )}
 
-        {currentUser && currentUser.role === 'GATEKEEPER' && (
-          <GatekeeperDashboard currentUser={currentUser} requests={requests} />
-        )}
+        {currentUser && activeView === 'OUTPASS' && (
+          <>
+            {currentUser.role === 'STUDENT' && (
+              <StudentDashboard currentUser={currentUser} requests={requests} />
+            )}
 
-        {currentUser && currentUser.role === 'EW' && (
-          <EWDashboard currentUser={currentUser} requests={requests} />
+            {currentUser.role === 'RC' && (
+              <RCDashboard 
+                currentUser={currentUser} 
+                requests={requests} 
+                onManualSync={handleManualSync}
+                syncLatencyMs={syncLatencyMs}
+              />
+            )}
+
+            {currentUser.role === 'GATEKEEPER' && (
+              <GatekeeperDashboard currentUser={currentUser} requests={requests} />
+            )}
+
+            {currentUser.role === 'EW' && (
+              <EWDashboard 
+                currentUser={currentUser} 
+                requests={requests}
+                onNavigateToHolidayMess={() => setActiveView('HOLIDAY_MESS')}
+              />
+            )}
+
+            {currentUser.role === 'MESS_STAFF' && (
+              <HolidayMessModule currentUser={currentUser} />
+            )}
+          </>
         )}
       </main>
 

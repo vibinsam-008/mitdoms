@@ -85,6 +85,14 @@ export const RoleRegisterPage: React.FC<RoleRegisterPageProps> = ({
           icon: KeyRound,
           desc: 'Register main gate terminal account for QR pass logging'
         };
+      case 'MESS_STAFF':
+        return {
+          title: 'Hostel Mess Supervisor Registration',
+          idLabel: 'Mess Staff ID',
+          idPlaceholder: 'e.g., MESS-SUPERVISOR-02',
+          icon: KeyRound,
+          desc: 'Register mess & kitchen catering supervisor account for holiday food counting'
+        };
     }
   };
 

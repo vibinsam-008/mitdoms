@@ -12,7 +12,8 @@ import {
   Eye, 
   EyeOff,
   UserPlus,
-  Sparkles
+  Sparkles,
+  Utensils
 } from 'lucide-react';
 
 interface RoleLoginPageProps {
@@ -75,6 +76,16 @@ export const RoleLoginPage: React.FC<RoleLoginPageProps> = ({
           icon: KeyRound,
           accentColor: 'text-amber-400',
           demoAccount: { id: 'SEC-GATE-01', name: 'M. Selvam (Main Gate Post)' }
+        };
+      case 'MESS_STAFF':
+        return {
+          title: 'Hostel Mess Supervisor Login',
+          subtitle: 'Holiday Catering Planning & Kitchen Headcount Operations',
+          idLabel: 'Mess Supervisor Staff ID / Email',
+          idPlaceholder: 'e.g., MESS-CHEF-01 or mess.supervisor@mitindia.edu',
+          icon: Utensils,
+          accentColor: 'text-amber-400',
+          demoAccount: { id: 'MESS-CHEF-01', name: 'K. Arumugam (Mess Supervisor)' }
         };
     }
   };
